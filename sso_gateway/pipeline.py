@@ -376,9 +376,17 @@ def enrich_llavemx_details_from_saberes(backend, details=None, *args, **kwargs):
 
 
 def _set_user_source(user, source):
-    """Guarda la fuente de registro en UserAttribute."""
+    """
+    Guarda la fuente de acceso en dos UserAttribute:
+      - registration_source: inmutable, solo se escribe si aún no existe (fuente del registro original).
+      - last_login_source:   se sobrescribe en cada login (fuente del acceso más reciente).
+    """
     try:
         from common.djangoapps.student.models import UserAttribute
-        UserAttribute.set_user_attribute(user, 'registration_source', source)
+
+        if UserAttribute.get_user_attribute(user, 'registration_source') is None:
+            UserAttribute.set_user_attribute(user, 'registration_source', source)
+
+        UserAttribute.set_user_attribute(user, 'last_login_source', source)
     except Exception as exc:
         logger.warning("[SSOGateway] No se pudo guardar UserAttribute: %s", exc)
