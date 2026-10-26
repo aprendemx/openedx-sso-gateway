@@ -1,5 +1,7 @@
 import logging
 
+from .identidad import es_registro_nuevo, identidad_llavemx
+
 logger = logging.getLogger(__name__)
 
 SESSION_COURSE_KEY = 'sso_gateway_pending_course_id'
@@ -156,6 +158,52 @@ def _set_if_empty(instance, field, new_value):
     return False
 
 
+
+def _es_registro_nuevo_llavemx(user, is_new, kwargs):
+    from django.utils import timezone
+    return es_registro_nuevo(
+        getattr(user, 'date_joined', None), is_new, kwargs.get('new_association'), timezone.now(),
+    )
+
+
+def _fijar_identidad_llavemx(user, extrainfo, details):
+    """
+    Registro nuevo: escribe en ExtraInfo y en el nombre del perfil (constancia) la
+    identidad verificada de Llave MX, aunque el formulario haya enviado otra.
+    No guarda ExtraInfo: devuelve los campos cambiados para el save() del paso.
+    El log lleva solo los nombres de los campos, nunca los valores.
+    """
+    identidad = identidad_llavemx(details)
+    cambiados = []
+    for campo in ('nombres', 'primer_apellido', 'segundo_apellido', 'curp'):
+        valor = identidad[campo]
+        if valor is None:
+            continue
+        if (getattr(extrainfo, campo, None) or '') != valor:
+            setattr(extrainfo, campo, valor)
+            cambiados.append(campo)
+
+    perfil_cambiado = False
+    if identidad['nombre_completo']:
+        try:
+            from common.djangoapps.student.models import UserProfile
+            perfil = UserProfile.objects.filter(user=user).first()
+            if perfil is not None and perfil.name != identidad['nombre_completo']:
+                perfil.name = identidad['nombre_completo']
+                perfil.save(update_fields=['name'])
+                perfil_cambiado = True
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("[SSOGateway] No se pudo fijar el nombre del perfil user_id=%s: %s", user.id, exc)
+
+    if cambiados or perfil_cambiado:
+        logger.info(
+            "[SSOGateway] Registro nuevo: identidad de Llave MX fijada user_id=%s "
+            "campos_que_diferian=%s nombre_perfil_diferia=%s",
+            user.id, cambiados, perfil_cambiado,
+        )
+    return cambiados
+
+
 # ---------------------------------------------------------------------------
 # Pipeline steps
 # ---------------------------------------------------------------------------
@@ -163,7 +211,12 @@ def _set_if_empty(instance, field, new_value):
 def fill_extrainfo_from_details(backend, details, user=None, is_new=False, *args, **kwargs):
     """
     Rellena ExtraInfo campo por campo — solo escribe si el campo está vacío.
-    Nunca sobreescribe datos existentes del usuario.
+    Nunca sobreescribe datos existentes del usuario, con una excepción:
+
+    En un REGISTRO NUEVO con Llave MX, la CURP, el nombre y los apellidos de Llave MX
+    (verificados contra RENAPO) prevalecen sobre lo capturado en el formulario, y el
+    nombre del perfil (el de la constancia) se fija con ellos. Las cuentas existentes
+    no se modifican.
 
     Fuentes:
       - Llave MX (details[]): nombres, primer_apellido, segundo_apellido, curp, municipio
@@ -213,6 +266,10 @@ def fill_extrainfo_from_details(backend, details, user=None, is_new=False, *args
 
     # --- Escribir campo por campo solo si está vacío ---
     changed = []
+
+    # Registro nuevo: la identidad de Llave MX prevalece sobre lo capturado.
+    if _es_registro_nuevo_llavemx(user, is_new, kwargs):
+        changed.extend(_fijar_identidad_llavemx(user, extrainfo, details))
 
     if _set_if_empty(extrainfo, 'nombres', nombres):               changed.append('nombres')
     if _set_if_empty(extrainfo, 'primer_apellido', primer_apellido): changed.append('primer_apellido')
