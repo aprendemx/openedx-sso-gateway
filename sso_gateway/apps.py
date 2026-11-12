@@ -59,6 +59,15 @@ class SSOGatewayConfig(AppConfig):
             before="common.djangoapps.third_party_auth.pipeline.ensure_user_information",
         )
 
+        # Solo en pruebas: simula campos de Llave MX. Sin el setting, el paso no se inserta.
+        if getattr(settings, "SSO_GATEWAY_SIMULAR_LLAVEMX", None):
+            self._insert_step(
+                pipeline,
+                step="sso_gateway.simulacion.simular_llavemx",
+                after="sso_gateway.pipeline.enrich_llavemx_details_from_saberes",
+                before="common.djangoapps.third_party_auth.pipeline.ensure_user_information",
+            )
+
         # fill_extrainfo corre después de create_user (user existe) y load_extra_data.
         self._insert_step(
             pipeline,
